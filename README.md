@@ -77,28 +77,28 @@ pixi run build
 pixi run test
 ```
 
-The current suite contains 38 passing parity and behavior tests, including
+The current suite contains 42 passing parity and behavior tests, including
 non-SIMD-aligned pHash sizes and both sides of the parallel launch threshold.
 
 ## Benchmarks
 
 These are end-to-end timings, including Pillow grayscale conversion and
 Lanczos resizing, on the same 2048 by 1536 RGB image. Lower is better. The
-table is real output from `pixi run bench` on 2026-07-29; the machine-wide
+table is real output from `pixi run bench` on 2026-08-24; the machine-wide
 benchmark lock was active.
 
 Machine: Intel(R) Xeon(R) CPU E5-2697 v4 @ 2.30GHz, Linux x86-64.
 
 | algorithm | mojo-imagehash | ImageHash 4.3.2 | speedup |
 |---|---:|---:|---:|
-| average_hash (hash_size=32) | 15.874 ms | 15.017 ms | 0.95x |
-| dhash (hash_size=32) | 12.927 ms | 12.726 ms | 0.98x |
-| phash (hash_size=16) | 13.777 ms | 13.395 ms | 0.97x |
-| whash (hash_size=16) | 27.126 ms | 120.173 ms | 4.43x |
+| average_hash (hash_size=32) | 11.926 ms | 11.257 ms | 0.94x |
+| dhash (hash_size=32) | 11.156 ms | 11.673 ms | 1.05x |
+| phash (hash_size=16) | 12.179 ms | 15.466 ms | 1.27x |
+| whash (hash_size=16) | 27.629 ms | 109.158 ms | 3.95x |
 
 Pillow preprocessing and FFI overhead dominate the small average-hash and
-dHash kernels. In this run those algorithms and pHash were effectively tied
-with ImageHash, while Haar wHash was 4.43x faster.
+dHash kernels. In this run average hash was effectively tied, dHash was 1.05x
+faster, pHash was 1.27x faster, and Haar wHash remained 3.95x faster.
 
 No GPU path is included. Average hash, dHash, and Haar low-pass reduction have
 too little arithmetic intensity, while the practical pHash DCT sizes are
@@ -123,13 +123,14 @@ output buffers. No allocation crosses the ABI.
 
 One Mojo compilation unit contains mean thresholding, horizontal and vertical
 differences, a separable low-frequency DCT-II, and Haar low-pass block
-reduction. The DCT uses native-width `float64` SIMD loads and reductions with
-scalar remainder loops, and parallelizes independent frequency rows only
-above its measured launch threshold. Python uses one allocation for DCT
-scratch and coefficients, applies the median threshold, and wraps the
-row-major Boolean matrix in `ImageHash`. When integer Haar coefficients tie at
-the median, PyWavelets resolves the floating-point tie so the result remains
-bit-for-bit compatible with ImageHash.
+reduction. Average thresholding and both difference directions use
+native-width SIMD with scalar remainder loops. The DCT uses native-width
+`float64` SIMD loads and reductions, also with scalar tails, and parallelizes
+independent frequency rows only at 16,384 row-elements or more. Python uses
+one allocation for DCT scratch and coefficients, applies the median threshold,
+and wraps the row-major Boolean matrix in `ImageHash`. When integer Haar
+coefficients tie at the median, PyWavelets resolves the floating-point tie so
+the result remains bit-for-bit compatible with ImageHash.
 
 ## License
 

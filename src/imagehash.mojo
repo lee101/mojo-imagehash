@@ -1,7 +1,8 @@
 """Numeric kernels for perceptual image hashes."""
 
 from std.math import cos
-from std.sys.info import simd_width_of
+from std.algorithm import parallelize
+from std.sys.info import simd_width_of as simdwidthof
 
 comptime U8Ptr = UnsafePointer[UInt8, AnyOrigin[mut=True]]
 comptime F64Ptr = UnsafePointer[Float64, AnyOrigin[mut=True]]
@@ -18,11 +19,29 @@ def mih_average_hash(
     var pixels = U8Ptr(unsafe_from_address=pixels_addr)
     var bits = U8Ptr(unsafe_from_address=bits_addr)
     var total = Int64(0)
-    for i in range(count):
+    comptime W = simdwidthof[DType.float64]()
+    var i = 0
+    var totals = SIMD[DType.int64, W](0)
+    while i + W <= count:
+        totals += pixels.load[width=W](i).cast[DType.int64]()
+        i += W
+    total += totals.reduce_add()
+    while i < count:
         total += Int64(pixels[i])
+        i += 1
     var average = Float64(total) / Float64(count)
-    for i in range(count):
+    i = 0
+    while i + W <= count:
+        bits.store(
+            i,
+            pixels.load[width=W](i).cast[DType.float64]().gt(average).cast[
+                DType.uint8
+            ](),
+        )
+        i += W
+    while i < count:
         bits[i] = UInt8(1) if Float64(pixels[i]) > average else UInt8(0)
+        i += 1
     return 0
 
 
@@ -41,8 +60,19 @@ def mih_threshold(
         return 1
     var pixels = U8Ptr(unsafe_from_address=pixels_addr)
     var bits = U8Ptr(unsafe_from_address=bits_addr)
-    for i in range(count):
+    comptime W = simdwidthof[DType.float64]()
+    var i = 0
+    while i + W <= count:
+        bits.store(
+            i,
+            pixels.load[width=W](i).cast[DType.float64]().gt(threshold).cast[
+                DType.uint8
+            ](),
+        )
+        i += W
+    while i < count:
         bits[i] = UInt8(1) if Float64(pixels[i]) > threshold else UInt8(0)
+        i += 1
     return 0
 
 
@@ -65,12 +95,24 @@ def mih_difference_hash(
         return 1
     var pixels = U8Ptr(unsafe_from_address=pixels_addr)
     var bits = U8Ptr(unsafe_from_address=bits_addr)
+    comptime W = simdwidthof[DType.float64]()
     for y in range(hash_size):
-        for x in range(hash_size):
+        var x = 0
+        while x + W <= hash_size:
+            var i = y * row_stride + x
+            bits.store(
+                y * hash_size + x,
+                pixels.load[width=W](i + 1).gt(
+                    pixels.load[width=W](i)
+                ).cast[DType.uint8](),
+            )
+            x += W
+        while x < hash_size:
             var i = y * row_stride + x
             bits[y * hash_size + x] = UInt8(1) if pixels[i + 1] > pixels[
                 i
             ] else UInt8(0)
+            x += 1
     return 0
 
 
@@ -93,14 +135,26 @@ def mih_vertical_difference_hash(
         return 1
     var pixels = U8Ptr(unsafe_from_address=pixels_addr)
     var bits = U8Ptr(unsafe_from_address=bits_addr)
+    comptime W = simdwidthof[DType.float64]()
     for y in range(hash_size):
-        for x in range(hash_size):
+        var x = 0
+        while x + W <= hash_size:
+            var i = y * row_stride + x
+            bits.store(
+                y * hash_size + x,
+                pixels.load[width=W](i + row_stride).gt(
+                    pixels.load[width=W](i)
+                ).cast[DType.uint8](),
+            )
+            x += W
+        while x < hash_size:
             var i = y * row_stride + x
             bits[y * hash_size + x] = UInt8(1) if pixels[
                 i + row_stride
             ] > pixels[i] else UInt8(
                 0
             )
+            x += 1
     return 0
 
 
@@ -135,7 +189,7 @@ def mih_phash_dct(
         2.0 * Float64(image_size)
     )
     var temp_offset = hash_size * image_size
-    comptime W = simd_width_of[DType.float64]()
+    comptime W = simdwidthof[DType.float64]()
 
     for k in range(hash_size):
         for i in range(image_size):
@@ -188,10 +242,16 @@ def mih_phash_dct(
                 x += 1
             local_coeff[k * hash_size + l] = 2.0 * acc
 
-    for k in range(hash_size):
+    @parameter
+    def transform_row(k: Int):
         first_pass(k)
-    for k in range(hash_size):
         second_pass(k)
+
+    if hash_size * image_size >= 16_384:
+        parallelize[transform_row](hash_size, min(hash_size, 16))
+    else:
+        for k in range(hash_size):
+            transform_row(k)
 
     var zero_scale = abs(coeff[0]) * 1.0e-13
     if zero_scale > 0.0:

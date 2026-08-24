@@ -28,7 +28,7 @@ def images():
     ]
 
 
-@pytest.mark.parametrize("hash_size", [4, 8, 16])
+@pytest.mark.parametrize("hash_size", [4, 5, 8, 16])
 def test_average_hash_parity(images, hash_size):
     for image in images:
         assert mojo.average_hash(image, hash_size) == upstream.average_hash(
@@ -38,18 +38,18 @@ def test_average_hash_parity(images, hash_size):
 
 def test_average_hash_custom_mean(images):
     for image in images:
-        assert mojo.average_hash(image, mean=np.median) == upstream.average_hash(
-            image, mean=np.median
-        )
+        assert mojo.average_hash(
+            image, hash_size=5, mean=np.median
+        ) == upstream.average_hash(image, hash_size=5, mean=np.median)
 
 
-@pytest.mark.parametrize("hash_size", [4, 8, 16])
+@pytest.mark.parametrize("hash_size", [4, 5, 8, 16])
 def test_dhash_parity(images, hash_size):
     for image in images:
         assert mojo.dhash(image, hash_size) == upstream.dhash(image, hash_size)
 
 
-@pytest.mark.parametrize("hash_size", [4, 8, 16])
+@pytest.mark.parametrize("hash_size", [4, 5, 8, 16])
 def test_vertical_dhash_parity(images, hash_size):
     for image in images:
         assert mojo.dhash_vertical(image, hash_size) == upstream.dhash_vertical(
@@ -67,7 +67,7 @@ def test_phash_parity(images, hash_size, highfreq_factor):
 
 @pytest.mark.parametrize(
     "hash_size,highfreq_factor",
-    [(5, 1), (5, 3), (32, 16)],
+    [(5, 1), (5, 3), (32, 15), (32, 16)],
 )
 def test_phash_simd_tail_and_parallel_parity(images, hash_size, highfreq_factor):
     for image in images[:2]:
