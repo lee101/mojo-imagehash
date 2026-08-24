@@ -1,6 +1,5 @@
 """Numeric kernels for perceptual image hashes."""
 
-from std.algorithm import parallelize
 from std.math import cos
 from std.sys.info import simd_width_of
 
@@ -189,14 +188,10 @@ def mih_phash_dct(
                 x += 1
             local_coeff[k * hash_size + l] = 2.0 * acc
 
-    if image_size * image_size * hash_size >= 8_000_000:
-        parallelize[first_pass](hash_size)
-        parallelize[second_pass](hash_size)
-    else:
-        for k in range(hash_size):
-            first_pass(k)
-        for k in range(hash_size):
-            second_pass(k)
+    for k in range(hash_size):
+        first_pass(k)
+    for k in range(hash_size):
+        second_pass(k)
 
     var zero_scale = abs(coeff[0]) * 1.0e-13
     if zero_scale > 0.0:
