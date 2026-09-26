@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
-from ._lib import buffer, checked_call
+from ._lib import buffer, checked_call, run_dct
 
 __version__ = "0.1.0"
 
@@ -111,8 +111,7 @@ def phash(image, hash_size=8, highfreq_factor=4):
     pixels_addr, pixels_len, pixels_stride = buffer(pixels, np.uint8)
     work_addr, work_len, _ = buffer(work, np.float64)
     coeff_addr, coeff_len, _ = buffer(coeff, np.float64)
-    checked_call(
-        "mih_phash_dct",
+    run_dct(
         pixels_addr,
         pixels_len,
         pixels_stride,

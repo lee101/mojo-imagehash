@@ -124,11 +124,15 @@ output buffers. No allocation crosses the ABI.
 One Mojo compilation unit contains mean thresholding, horizontal and vertical
 differences, a separable low-frequency DCT-II, and Haar low-pass block
 reduction. Average thresholding and both difference directions use
-native-width SIMD with scalar remainder loops. The DCT uses native-width
-`float64` SIMD loads and reductions, also with scalar tails, and parallelizes
-independent frequency rows only at 16,384 row-elements or more. Python uses
-one allocation for DCT scratch and coefficients, applies the median threshold,
-and wraps the row-major Boolean matrix in `ImageHash`. When integer Haar
+`float64` SIMD loads and reductions, also with scalar tails. The DCT splits into
+two range entry points, `mih_phash_dct_first` and `mih_phash_dct_second`, which
+the Python shim runs over a `ThreadPoolExecutor`; the second pass reads every
+projected row, so the two passes are separated by a barrier. Measured on this
+box, eight workers score 0.16x at 8,192 row-elements and 4.3x at 32,768, so
+independent frequency rows only split at 16,384 row-elements or more. The split
+is bit-for-bit identical to the single-core `mih_phash_dct` entry.
+Python uses one allocation for DCT scratch and coefficients, applies the median
+threshold, and wraps the row-major Boolean matrix in `ImageHash`. When integer Haar
 coefficients tie at the median, PyWavelets resolves the floating-point tie so
 the result remains bit-for-bit compatible with ImageHash.
 

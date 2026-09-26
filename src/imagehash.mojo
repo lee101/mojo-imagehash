@@ -1,7 +1,6 @@
 """Numeric kernels for perceptual image hashes."""
 
 from std.math import cos
-from std.algorithm import parallelize
 from std.sys.info import simd_width_of as simdwidthof
 
 comptime U8Ptr = UnsafePointer[UInt8, AnyOrigin[mut=True]]
@@ -185,80 +184,139 @@ def mih_phash_dct(
     var pixels = U8Ptr(unsafe_from_address=pixels_addr)
     var work = F64Ptr(unsafe_from_address=work_addr)
     var coeff = F64Ptr(unsafe_from_address=coeff_addr)
-    var angle_scale = 3.1415926535897932384626433832795 / (
-        2.0 * Float64(image_size)
-    )
     var temp_offset = hash_size * image_size
-    comptime W = simdwidthof[DType.float64]()
 
-    for k in range(hash_size):
-        for i in range(image_size):
-            work[k * image_size + i] = cos(
-                Float64(k * (2 * i + 1)) * angle_scale
-            )
-
-    def first_pass(k: Int) capturing:
-        var local_pixels = U8Ptr(unsafe_from_address=pixels_addr)
-        var local_work = F64Ptr(unsafe_from_address=work_addr)
-        var x = 0
-        while x + W <= image_size:
-            var acc = SIMD[DType.float64, W](0.0)
-            for y in range(image_size):
-                acc += (
-                    local_pixels.load[width=W](y * image_size + x).cast[
-                        DType.float64
-                    ]()
-                    * local_work[k * image_size + y]
-                )
-            local_work.store(temp_offset + k * image_size + x, 2.0 * acc)
-            x += W
-        while x < image_size:
-            var scalar_acc = 0.0
-            for y in range(image_size):
-                scalar_acc += (
-                    Float64(local_pixels[y * image_size + x])
-                    * local_work[k * image_size + y]
-                )
-            local_work[temp_offset + k * image_size + x] = 2.0 * scalar_acc
-            x += 1
-
-    def second_pass(k: Int) capturing:
-        var local_work = F64Ptr(unsafe_from_address=work_addr)
-        var local_coeff = F64Ptr(unsafe_from_address=coeff_addr)
-        for l in range(hash_size):
-            var acc_vec = SIMD[DType.float64, W](0.0)
-            var x = 0
-            while x + W <= image_size:
-                acc_vec += local_work.load[width=W](
-                    temp_offset + k * image_size + x
-                ) * local_work.load[width=W](l * image_size + x)
-                x += W
-            var acc = Float64(acc_vec.reduce_add())
-            while x < image_size:
-                acc += (
-                    local_work[temp_offset + k * image_size + x]
-                    * local_work[l * image_size + x]
-                )
-                x += 1
-            local_coeff[k * hash_size + l] = 2.0 * acc
-
-    @parameter
-    def transform_row(k: Int):
-        first_pass(k)
-        second_pass(k)
-
-    if hash_size * image_size >= 16_384:
-        parallelize[transform_row](hash_size, min(hash_size, 16))
-    else:
-        for k in range(hash_size):
-            transform_row(k)
-
+    dct_first_rows(
+        pixels, work, image_size, hash_size, temp_offset, 0, hash_size
+    )
+    dct_second_rows(
+        work, coeff, image_size, hash_size, temp_offset, 0, hash_size
+    )
     var zero_scale = abs(coeff[0]) * 1.0e-13
     if zero_scale > 0.0:
         for i in range(hash_size * hash_size):
             if abs(coeff[i]) < zero_scale:
                 coeff[i] = 0.0
     return 0
+
+
+    """Project pixel rows [k0, k1); each span fills its own cosine rows."""
+def dct_first_rows(
+    pixels: U8Ptr,
+    work: F64Ptr,
+    image_size: Int,
+    hash_size: Int,
+    temp_offset: Int,
+    k0: Int,
+    k1: Int,
+):
+    comptime W = simdwidthof[DType.float64]()
+    var angle_scale = 3.1415926535897932384626433832795 / (
+        2.0 * Float64(image_size)
+    )
+    for k in range(k0, k1):
+        for i in range(image_size):
+            work[k * image_size + i] = cos(
+                Float64(k * (2 * i + 1)) * angle_scale
+            )
+        var x = 0
+        while x + W <= image_size:
+            var acc = SIMD[DType.float64, W](0.0)
+            for y in range(image_size):
+                acc += (
+                    pixels.load[width=W](y * image_size + x).cast[
+                        DType.float64
+                    ]()
+                    * work[k * image_size + y]
+                )
+            work.store(temp_offset + k * image_size + x, 2.0 * acc)
+            x += W
+        while x < image_size:
+            var scalar_acc = 0.0
+            for y in range(image_size):
+                scalar_acc += (
+                    Float64(pixels[y * image_size + x]) * work[k * image_size + y]
+                )
+            work[temp_offset + k * image_size + x] = 2.0 * scalar_acc
+            x += 1
+
+
+def dct_second_rows(
+    work: F64Ptr,
+    coeff: F64Ptr,
+    image_size: Int,
+    hash_size: Int,
+    temp_offset: Int,
+    k0: Int,
+    k1: Int,
+):
+    comptime W = simdwidthof[DType.float64]()
+    for k in range(k0, k1):
+        for l in range(hash_size):
+            var acc_vec = SIMD[DType.float64, W](0.0)
+            var x = 0
+            while x + W <= image_size:
+                acc_vec += work.load[width=W](
+                    temp_offset + k * image_size + x
+                ) * work.load[width=W](l * image_size + x)
+                x += W
+            var acc = Float64(acc_vec.reduce_add())
+            while x < image_size:
+                acc += (
+                    work[temp_offset + k * image_size + x]
+                    * work[l * image_size + x]
+                )
+                x += 1
+            coeff[k * hash_size + l] = 2.0 * acc
+
+
+@export("mih_phash_dct_first")
+def mih_phash_dct_first(
+    pixels_addr: Int,
+    image_size: Int,
+    hash_size: Int,
+    work_addr: Int,
+    k0: Int,
+    k1: Int,
+) abi("C") -> Int:
+    """Project pixel rows [k0, k1) of the DCT; the shim fans this out."""
+    if pixels_addr == 0 or work_addr == 0 or k0 < 0 or k1 > hash_size or k0 >= k1:
+        return 1
+    dct_first_rows(
+        U8Ptr(unsafe_from_address=pixels_addr),
+        F64Ptr(unsafe_from_address=work_addr),
+        image_size,
+        hash_size,
+        hash_size * image_size,
+        k0,
+        k1,
+    )
+    return 0
+
+
+@export("mih_phash_dct_second")
+def mih_phash_dct_second(
+    work_addr: Int,
+    image_size: Int,
+    hash_size: Int,
+    coeff_addr: Int,
+    k0: Int,
+    k1: Int,
+) abi("C") -> Int:
+    """Correlate DCT rows [k0, k1); runs after every first pass has landed."""
+    if work_addr == 0 or coeff_addr == 0 or k0 < 0 or k1 > hash_size or k0 >= k1:
+        return 1
+    dct_second_rows(
+        F64Ptr(unsafe_from_address=work_addr),
+        F64Ptr(unsafe_from_address=coeff_addr),
+        image_size,
+        hash_size,
+        hash_size * image_size,
+        k0,
+        k1,
+    )
+    return 0
+
 
 
 @export("mih_haar_lowpass")

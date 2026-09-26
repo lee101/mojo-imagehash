@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -24,9 +25,81 @@ _SIGNATURES = {
     "mih_difference_hash": ([I, I, I, I, I, I], I),
     "mih_vertical_difference_hash": ([I, I, I, I, I, I], I),
     "mih_phash_dct": ([I, I, I, I, I, I, I, I, I], I),
+    "mih_phash_dct_first": ([I] * 6, I),
+    "mih_phash_dct_second": ([I] * 6, I),
     "mih_haar_lowpass": ([I, I, I, I, I, I, I], I),
 }
 
+# The DCT is two dense passes over the frequency rows. Measured on this box the
+# fan-out only wins past roughly 16k row-elements (0.16x at 8k, 4.3x at 32k), so
+# that is the cut-off; below it the kernel runs on one core.
+DCT_PARALLEL_WORK = 16_384
+DCT_MAX_WORKERS = 8
+
+
+def dct_worker_count(rows: int, work: int) -> int:
+    if rows < 2 or work < DCT_PARALLEL_WORK:
+        return 1
+    return min(rows, DCT_MAX_WORKERS)
+
+
+def spans(total: int, parts: int) -> list[tuple[int, int]]:
+    """Split ``total`` rows into ``parts`` contiguous, near-equal spans."""
+    step = -(-total // parts)
+    return [
+        (lo, min(lo + step, total)) for lo in range(0, total, step) if lo < total
+    ]
+
+
+def run_dct(
+    pixels_addr,
+    pixels_len,
+    row_stride,
+    image_size,
+    hash_size,
+    work_addr,
+    work_len,
+    coeff_addr,
+    coeff_len,
+):
+    """Project the DCT rows, fanning both passes out across a thread pool."""
+    workers = dct_worker_count(hash_size, hash_size * image_size)
+    if workers == 1:
+        checked_call(
+            "mih_phash_dct",
+            pixels_addr,
+            pixels_len,
+            row_stride,
+            image_size,
+            hash_size,
+            work_addr,
+            work_len,
+            coeff_addr,
+            coeff_len,
+        )
+        return
+    first = (pixels_addr, image_size, hash_size, work_addr)
+    second = (work_addr, image_size, hash_size, coeff_addr)
+    rows = spans(hash_size, workers)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # The second pass reads every projected row, so the two passes need a
+        # barrier between them; one pool keeps the threads warm across it.
+        list(
+            pool.map(
+                lambda span: checked_call(
+                    "mih_phash_dct_first", *first, span[0], span[1]
+                ),
+                rows,
+            )
+        )
+        list(
+            pool.map(
+                lambda span: checked_call(
+                    "mih_phash_dct_second", *second, span[0], span[1]
+                ),
+                rows,
+            )
+        )
 
 class BuildError(RuntimeError):
     pass
