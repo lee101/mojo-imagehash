@@ -22,7 +22,7 @@ def mih_average_hash(
     var i = 0
     var totals = SIMD[DType.int64, W](0)
     while i + W <= count:
-        totals += pixels.load[width=W](i).cast[DType.int64]()
+        totals += pixels.unsafe_load[width=W](i).cast[DType.int64]()
         i += W
     total += totals.reduce_add()
     while i < count:
@@ -33,7 +33,7 @@ def mih_average_hash(
     while i + W <= count:
         bits.store(
             i,
-            pixels.load[width=W](i).cast[DType.float64]().gt(average).cast[
+            pixels.unsafe_load[width=W](i).cast[DType.float64]().gt(average).cast[
                 DType.uint8
             ](),
         )
@@ -64,7 +64,7 @@ def mih_threshold(
     while i + W <= count:
         bits.store(
             i,
-            pixels.load[width=W](i).cast[DType.float64]().gt(threshold).cast[
+            pixels.unsafe_load[width=W](i).cast[DType.float64]().gt(threshold).cast[
                 DType.uint8
             ](),
         )
@@ -101,8 +101,8 @@ def mih_difference_hash(
             var i = y * row_stride + x
             bits.store(
                 y * hash_size + x,
-                pixels.load[width=W](i + 1).gt(
-                    pixels.load[width=W](i)
+                pixels.unsafe_load[width=W](i + 1).gt(
+                    pixels.unsafe_load[width=W](i)
                 ).cast[DType.uint8](),
             )
             x += W
@@ -141,8 +141,8 @@ def mih_vertical_difference_hash(
             var i = y * row_stride + x
             bits.store(
                 y * hash_size + x,
-                pixels.load[width=W](i + row_stride).gt(
-                    pixels.load[width=W](i)
+                pixels.unsafe_load[width=W](i + row_stride).gt(
+                    pixels.unsafe_load[width=W](i)
                 ).cast[DType.uint8](),
             )
             x += W
@@ -224,7 +224,7 @@ def dct_first_rows(
             var acc = SIMD[DType.float64, W](0.0)
             for y in range(image_size):
                 acc += (
-                    pixels.load[width=W](y * image_size + x).cast[
+                    pixels.unsafe_load[width=W](y * image_size + x).cast[
                         DType.float64
                     ]()
                     * work[k * image_size + y]
@@ -256,9 +256,9 @@ def dct_second_rows(
             var acc_vec = SIMD[DType.float64, W](0.0)
             var x = 0
             while x + W <= image_size:
-                acc_vec += work.load[width=W](
+                acc_vec += work.unsafe_load[width=W](
                     temp_offset + k * image_size + x
-                ) * work.load[width=W](l * image_size + x)
+                ) * work.unsafe_load[width=W](l * image_size + x)
                 x += W
             var acc = Float64(acc_vec.reduce_add())
             while x < image_size:
