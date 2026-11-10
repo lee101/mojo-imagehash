@@ -83,47 +83,56 @@ non-SIMD-aligned pHash sizes and both sides of the parallel launch threshold.
 ## Benchmarks
 
 These are end-to-end timings, including Pillow grayscale conversion and
-Lanczos resizing, on the same 2048 by 1536 RGB image. Lower is better. Both
-the before and after columns are real `pixi run bench` output from 2026-11-10:
-the unmodified library and the unrolled library were run alternately, three
-times each, and each cell is the fastest of those three runs. The machine-wide
-benchmark lock was saturated for the whole session (a waiting queue of 13-20
-processes from other repositories that never drained within two hours), so
-these runs were taken without it, under a load average of 17-21. Single-run
-values wander by about 0.3 ms (average hash, dHash, pHash) and about 1.2 ms
-(wHash); the kernel table below separates code effects from that noise.
+Lanczos resizing, on the same 2048 by 1536 RGB image. Lower is better. The
+`after` and `ImageHash 4.3.2` columns were measured on 2026-11-10 by four
+`pixi run bench` runs of the shipped library; each cell is the median of those
+four runs. The before column is the previous revision (pre-unroll) and was
+**not** remeasured in that pass: no build of it was kept, so it is carried over
+as history, not as a measurement. The runs went through `pixi run bench`, under
+the machine-wide benchmark lock, while that lock's queue held 5-9 processes
+from other repositories and load average was 15-18; a run waits 25-55 minutes
+to start. Single-run values wander by about 0.3 ms, more for average hash under
+that load; the kernel table below separates code effects from that noise.
 
 Machine: Intel(R) Xeon(R) CPU E5-2697 v4 @ 2.30GHz, Linux x86-64.
 
 | algorithm | before | after | ImageHash 4.3.2 |
 |---|---:|---:|---:|
-| average_hash (hash_size=32) | 11.71 ms | 11.95 ms | 11.74 ms |
-| dhash (hash_size=32) | 12.01 ms | 11.84 ms | 11.77 ms |
-| phash (hash_size=16) | 12.43 ms | 12.46 ms | 12.37 ms |
-| whash (hash_size=16) | 26.39 ms | 25.69 ms | 100.15 ms |
+| average_hash (hash_size=32) | 11.71 ms | 12.09 ms | 12.00 ms |
+| dhash (hash_size=32) | 12.01 ms | 12.06 ms | 12.56 ms |
+| phash (hash_size=16) | 12.43 ms | 12.97 ms | 12.90 ms |
+| whash (hash_size=16) | 26.39 ms | 26.38 ms | 108.02 ms |
 
-The ImageHash column is the fastest of the same three runs.
+The ImageHash column is the median of the same four runs.
 
-Only wHash moves: its Haar kernel dropped from 1.14 ms to 0.32 ms, but the
-whole call is ~26 ms because Pillow's grayscale conversion and Lanczos resize
-to 1024 by 1024 take ~22 ms, so the end-to-end difference (~0.7 ms) is near the
-run-to-run spread and should be read as such. The other three calls keep their
-kernels at 0.003 ms, 0.002 ms, and 0.05 ms, which Pillow preprocessing and the
-resize dominate completely; their before/after differences here are scheduler
-noise, not code changes, and no claim is made from them.
+Only wHash moves: its Haar kernel is ~0.37 ms, but the whole call is ~26 ms
+because Pillow's grayscale conversion and Lanczos resize to 1024 by 1024 take
+~27 ms, so the end-to-end difference is near the run-to-run spread and should
+be read as such. The other three calls keep their kernels at 0.002 ms
+(average hash), 0.002 ms (dHash) and 0.0095 ms (pHash at hash_size 8), which
+Pillow preprocessing and the resize dominate completely; their before/after
+differences here are scheduler noise, not code changes, and no claim is made
+from them.
 
-Kernel-only timings on the shipped library, minimum of 60 calls, fixed inputs:
+Kernel-only timings on the shipped library, minimum of 60 calls, fixed inputs,
+measured on 2026-11-10:
 
-| kernel | before | after | change |
-|---|---:|---:|---:|
-| `mih_haar_lowpass` 1024x1024 -> 16x16 | 1.138 ms | 0.325 ms | 3.5x |
-| `mih_haar_lowpass` 512x512 -> 16x16 | 0.286 ms | 0.087 ms | 3.3x |
-| `mih_phash_dct` serial, 64x64 image_size, hash_size 16 | 0.0586 ms | 0.0589 ms | unchanged |
-| `mih_phash_dct` serial, 128x128 image_size, hash_size 32 | 0.364 ms | 0.366 ms | unchanged |
+| kernel | before | after |
+|---|---:|---:|
+| `mih_haar_lowpass` 1024x1024 -> 16x16 | 1.138 ms | 0.369 ms |
+| `mih_haar_lowpass` 512x512 -> 16x16 | 0.286 ms | 0.096 ms |
+| `mih_phash_dct` serial, 64x64 image_size, hash_size 16 | 0.0586 ms | 0.046 ms |
+| `mih_phash_dct` serial, 128x128 image_size, hash_size 32 | 0.364 ms | 0.334 ms |
+
+The before column of this table is the previous revision and was not
+remeasured; only the after column was.
 
 Pillow preprocessing and FFI overhead dominate the small average-hash and
-dHash kernels. In this run average hash was effectively tied, dHash was tied,
-pHash was ~1.02x faster than ImageHash, and Haar wHash was ~3.8x faster.
+dHash kernels. In this run average hash, dHash and pHash were all ties with
+ImageHash: dHash ran 0.98x-1.05x and pHash 0.98x-1.04x from run to run, and
+average hash 0.86x-1.00x, dragged down by one run under load (median 0.99x).
+The sign flips with the scheduler, so none of the three is claimed as a win.
+Haar wHash was ~4.1x faster.
 
 ## GPU phase
 
@@ -155,12 +164,12 @@ copied in, so at the default 32x32 plane the transfer alone is larger than the
 entire CPU computation. The GPU loses at the call most users make.
 
 It does win from `hash_size=16` upward, but that win is invisible end to end:
-`phash` on a 2048x1536 image is 12.078 ms (hash_size 8), 12.527 ms (16) and
-13.813 ms (32), because Pillow's grayscale conversion and Lanczos resize take
-about 12 ms of every call. Replacing a 312 us kernel with a 52 us one at
-`hash_size=32` moves the total by 2.3%, inside the +-0.3 ms to +-1.2 ms
-run-to-run spread this README already documents. It would win only on a plane
-large enough that nobody calls `phash` with it.
+`phash` on a 2048x1536 image is 12.341 ms (hash_size 8), 12.488 ms (16) and
+13.934 ms (32) as measured on 2026-11-10, because Pillow's grayscale conversion
+and Lanczos resize take about 12 ms of every call. Replacing the CPU DCT kernel
+(0.334 ms measured at 128x128, hash_size 32) with a 52 us one moves the total
+by 2%, inside the run-to-run spread this README already documents. It would win
+only on a plane large enough that nobody calls `phash` with it.
 
 Three further findings rule the path out on this toolchain. `cos` on
 `DType.float64` is not supported on NVIDIA GPU (`DType.float64 is not
