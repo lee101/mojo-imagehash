@@ -125,9 +125,59 @@ Pillow preprocessing and FFI overhead dominate the small average-hash and
 dHash kernels. In this run average hash was effectively tied, dHash was tied,
 pHash was ~1.02x faster than ImageHash, and Haar wHash was ~3.8x faster.
 
-No GPU path is included. Average hash, dHash, and Haar low-pass reduction have
-too little arithmetic intensity, while the practical pHash DCT sizes are
-too short to justify adding device transfer and launch overhead.
+## GPU phase
+
+The gate is in `bench/analysis.md`: only kernels above roughly 2 flops per
+byte are candidates. Average hash and both dHashes are 0.50 flops/byte and Haar
+low-pass is 1.00 flops/byte, so those are **CPU only: memory-bound** and were
+not taken further. Only `phash` DCT clears the gate at the sizes callers pass
+(3.64 flops/byte at the default `hash_size=8`, rising to 14.55 at 32).
+
+**No GPU path ships.** The device was free enough to use
+(`nvidia-smi --query-gpu=memory.free` reported 4,557 MiB, above the 4,000 MiB
+floor), so this is a measured decision, not a skip. A kernel with the same
+arithmetic as `mih_phash_dct` — one thread per output, the same sequential
+summation order, one copy-in and one copy-out — was run on the device with
+`DeviceContext` from `max.gpu.host` and `block_idx`/`thread_idx` from
+`max.gpu`:
+
+| `phash` DCT | CPU serial | GPU, copies included | GPU/CPU |
+|---|---:|---:|---:|
+| hash_size 8 (32x32, default) | 9.5 us | 25.8 us | 0.37x |
+| hash_size 16 (64x64) | 48.4 us | 33.8 us | 1.43x |
+| hash_size 32 (128x128) | 312 us | 52.4 us | 6.0x |
+| hash_size 64 (256x256) | 2,566 us | 87.7 us | 29x |
+
+Best of 20 runs on the shared RTX 5090, run while the CPU numbers above were
+taken. The floor for the simplest possible single launch on this device is
+6.3-7.3 us for launch plus synchronisation, and 10.9 us once an 8 KB buffer is
+copied in, so at the default 32x32 plane the transfer alone is larger than the
+entire CPU computation. The GPU loses at the call most users make.
+
+It does win from `hash_size=16` upward, but that win is invisible end to end:
+`phash` on a 2048x1536 image is 12.078 ms (hash_size 8), 12.527 ms (16) and
+13.813 ms (32), because Pillow's grayscale conversion and Lanczos resize take
+about 12 ms of every call. Replacing a 312 us kernel with a 52 us one at
+`hash_size=32` moves the total by 2.3%, inside the +-0.3 ms to +-1.2 ms
+run-to-run spread this README already documents. It would win only on a plane
+large enough that nobody calls `phash` with it.
+
+Three further findings rule the path out on this toolchain. `cos` on
+`DType.float64` is not supported on NVIDIA GPU (`DType.float64 is not
+supported for cos on NVIDIA GPU`), so the cosine table has to be built on the
+host and uploaded, which adds a second copy-in that must be cached per size to
+avoid repeating it per call. The two DCT passes need a barrier between them, so
+a faithful version is two launches per call, not one. And the result is not
+bit-identical to the CPU kernel: with the host table the largest coefficient
+difference was 3.6e-10, which changes no hash bit on the tested image but does
+break the bit-for-bit guarantee the rest of the library keeps.
+
+So the GPU code was reverted rather than shipped; the CPU path is unchanged and
+remains the only path. No GPU test was added, because there is no GPU path to
+test: `pixi run test` runs the same 42 parity and behaviour tests on hosts with
+and without a device, and none of them were skipped. Should a future revision
+revisit this, `bench/analysis.md` holds the gate and the pool of real call
+sizes is hash size 4 to 32.
 
 Run the benchmark only through the locked task:
 
