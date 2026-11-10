@@ -9,12 +9,14 @@ version = "0.1.0"
 build = "bash build/build.sh"
 test = "python -m pytest tests -q"
 bench = "flock /tmp/mojo-bench.lock python bench/bench.py"
+bench-parallel = "flock /tmp/mojo-bench.lock python bench/parallel_measure.py"
 
 [activation.env]
 PYTHONPATH = "python"
 
 [dependencies]
 mojo = "==1.2.0.dev2026092605"
+max = "==26.7.0.dev2026092605"
 python = "3.13.*"
 pytest = "*"
 numpy = "*"
