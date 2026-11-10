@@ -215,10 +215,10 @@ def dct_first_rows(
         2.0 * Float64(image_size)
     )
     for k in range(k0, k1):
+        var cos_row = k * image_size
+        var out = temp_offset + cos_row
         for i in range(image_size):
-            work[k * image_size + i] = cos(
-                Float64(k * (2 * i + 1)) * angle_scale
-            )
+            work[cos_row + i] = cos(Float64(k * (2 * i + 1)) * angle_scale)
         var x = 0
         while x + W <= image_size:
             var acc = SIMD[DType.float64, W](0.0)
@@ -227,17 +227,17 @@ def dct_first_rows(
                     pixels.unsafe_load[width=W](y * image_size + x).cast[
                         DType.float64
                     ]()
-                    * work[k * image_size + y]
+                    * work[cos_row + y]
                 )
-            work.store(temp_offset + k * image_size + x, 2.0 * acc)
+            work.store(out + x, 2.0 * acc)
             x += W
         while x < image_size:
             var scalar_acc = 0.0
             for y in range(image_size):
                 scalar_acc += (
-                    Float64(pixels[y * image_size + x]) * work[k * image_size + y]
+                    Float64(pixels[y * image_size + x]) * work[cos_row + y]
                 )
-            work[temp_offset + k * image_size + x] = 2.0 * scalar_acc
+            work[out + x] = 2.0 * scalar_acc
             x += 1
 
 
@@ -252,20 +252,19 @@ def dct_second_rows(
 ):
     comptime W = simdwidthof[DType.float64]()
     for k in range(k0, k1):
+        var temp_row = temp_offset + k * image_size
         for l in range(hash_size):
+            var cos_row = l * image_size
             var acc_vec = SIMD[DType.float64, W](0.0)
             var x = 0
             while x + W <= image_size:
                 acc_vec += work.unsafe_load[width=W](
-                    temp_offset + k * image_size + x
-                ) * work.unsafe_load[width=W](l * image_size + x)
+                    temp_row + x
+                ) * work.unsafe_load[width=W](cos_row + x)
                 x += W
             var acc = Float64(acc_vec.reduce_add())
             while x < image_size:
-                acc += (
-                    work[temp_offset + k * image_size + x]
-                    * work[l * image_size + x]
-                )
+                acc += work[temp_row + x] * work[cos_row + x]
                 x += 1
             coeff[k * hash_size + l] = 2.0 * acc
 
@@ -342,11 +341,25 @@ def mih_haar_lowpass(
     var pixels = U8Ptr(unsafe_from_address=pixels_addr)
     var coeff = F64Ptr(unsafe_from_address=coeff_addr)
     var block = image_scale // hash_size
+    # Four partial sums per pixel block: a single running add would stall on
+    # floating-point add latency (~4 cycles) for the whole 4096-pixel block.
     for by in range(hash_size):
         for bx in range(hash_size):
-            var acc = 0.0
+            var a0 = 0.0
+            var a1 = 0.0
+            var a2 = 0.0
+            var a3 = 0.0
             for y in range(by * block, (by + 1) * block):
-                for x in range(bx * block, (bx + 1) * block):
-                    acc += Float64(pixels[y * image_scale + x])
-            coeff[by * hash_size + bx] = acc
+                var row = y * image_scale + bx * block
+                var x = 0
+                while x + 4 <= block:
+                    a0 += Float64(pixels.unsafe_load(row + x))
+                    a1 += Float64(pixels.unsafe_load(row + x + 1))
+                    a2 += Float64(pixels.unsafe_load(row + x + 2))
+                    a3 += Float64(pixels.unsafe_load(row + x + 3))
+                    x += 4
+                while x < block:
+                    a0 += Float64(pixels.unsafe_load(row + x))
+                    x += 1
+            coeff[by * hash_size + bx] = (a0 + a1) + (a2 + a3)
     return 0

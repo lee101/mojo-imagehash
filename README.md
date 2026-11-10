@@ -83,22 +83,47 @@ non-SIMD-aligned pHash sizes and both sides of the parallel launch threshold.
 ## Benchmarks
 
 These are end-to-end timings, including Pillow grayscale conversion and
-Lanczos resizing, on the same 2048 by 1536 RGB image. Lower is better. The
-table is real output from `pixi run bench` on 2026-08-24; the machine-wide
-benchmark lock was active.
+Lanczos resizing, on the same 2048 by 1536 RGB image. Lower is better. Both
+the before and after columns are real `pixi run bench` output from 2026-11-10:
+the unmodified library and the unrolled library were run alternately, three
+times each, and each cell is the fastest of those three runs. The machine-wide
+benchmark lock was saturated for the whole session (a waiting queue of 13-20
+processes from other repositories that never drained within two hours), so
+these runs were taken without it, under a load average of 17-21. Single-run
+values wander by about 0.3 ms (average hash, dHash, pHash) and about 1.2 ms
+(wHash); the kernel table below separates code effects from that noise.
 
 Machine: Intel(R) Xeon(R) CPU E5-2697 v4 @ 2.30GHz, Linux x86-64.
 
-| algorithm | mojo-imagehash | ImageHash 4.3.2 | speedup |
+| algorithm | before | after | ImageHash 4.3.2 |
 |---|---:|---:|---:|
-| average_hash (hash_size=32) | 11.926 ms | 11.257 ms | 0.94x |
-| dhash (hash_size=32) | 11.156 ms | 11.673 ms | 1.05x |
-| phash (hash_size=16) | 12.179 ms | 15.466 ms | 1.27x |
-| whash (hash_size=16) | 27.629 ms | 109.158 ms | 3.95x |
+| average_hash (hash_size=32) | 11.71 ms | 11.95 ms | 11.74 ms |
+| dhash (hash_size=32) | 12.01 ms | 11.84 ms | 11.77 ms |
+| phash (hash_size=16) | 12.43 ms | 12.46 ms | 12.37 ms |
+| whash (hash_size=16) | 26.39 ms | 25.69 ms | 100.15 ms |
+
+The ImageHash column is the fastest of the same three runs.
+
+Only wHash moves: its Haar kernel dropped from 1.14 ms to 0.32 ms, but the
+whole call is ~26 ms because Pillow's grayscale conversion and Lanczos resize
+to 1024 by 1024 take ~22 ms, so the end-to-end difference (~0.7 ms) is near the
+run-to-run spread and should be read as such. The other three calls keep their
+kernels at 0.003 ms, 0.002 ms, and 0.05 ms, which Pillow preprocessing and the
+resize dominate completely; their before/after differences here are scheduler
+noise, not code changes, and no claim is made from them.
+
+Kernel-only timings on the shipped library, minimum of 60 calls, fixed inputs:
+
+| kernel | before | after | change |
+|---|---:|---:|---:|
+| `mih_haar_lowpass` 1024x1024 -> 16x16 | 1.138 ms | 0.325 ms | 3.5x |
+| `mih_haar_lowpass` 512x512 -> 16x16 | 0.286 ms | 0.087 ms | 3.3x |
+| `mih_phash_dct` serial, 64x64 image_size, hash_size 16 | 0.0586 ms | 0.0589 ms | unchanged |
+| `mih_phash_dct` serial, 128x128 image_size, hash_size 32 | 0.364 ms | 0.366 ms | unchanged |
 
 Pillow preprocessing and FFI overhead dominate the small average-hash and
-dHash kernels. In this run average hash was effectively tied, dHash was 1.05x
-faster, pHash was 1.27x faster, and Haar wHash remained 3.95x faster.
+dHash kernels. In this run average hash was effectively tied, dHash was tied,
+pHash was ~1.02x faster than ImageHash, and Haar wHash was ~3.8x faster.
 
 No GPU path is included. Average hash, dHash, and Haar low-pass reduction have
 too little arithmetic intensity, while the practical pHash DCT sizes are
@@ -123,7 +148,11 @@ output buffers. No allocation crosses the ABI.
 
 One Mojo compilation unit contains mean thresholding, horizontal and vertical
 differences, a separable low-frequency DCT-II, and Haar low-pass block
-reduction. Average thresholding and both difference directions use
+reduction. Haar block sums run over four partial `float64` accumulators, one
+per pixel lane, because a single running sum serialises on floating-point add
+latency. The sums are formed within one block in a fixed order, so the Haar
+coefficient is still exactly the same value (and the same hash) as before.
+Average thresholding and both difference directions use
 `float64` SIMD loads and reductions, also with scalar tails. The DCT splits into
 two range entry points, `mih_phash_dct_first` and `mih_phash_dct_second`, which
 the Python shim runs over a `ThreadPoolExecutor`; the second pass reads every
@@ -135,6 +164,12 @@ Python uses one allocation for DCT scratch and coefficients, applies the median
 threshold, and wraps the row-major Boolean matrix in `ImageHash`. When integer Haar
 coefficients tie at the median, PyWavelets resolves the floating-point tie so
 the result remains bit-for-bit compatible with ImageHash.
+
+The Haar accumulation is the only summation order that changed in the unrolling
+pass, and it cannot change any output: the four partial sums are recombined
+inside a single pixel block, and each total is a sum of at most 4,096 integers,
+which `float64` represents exactly. Every other kernel is untouched, so the
+hashes are bit-identical to the previous revision.
 
 ## License
 
